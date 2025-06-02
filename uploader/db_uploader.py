@@ -2,6 +2,7 @@
 
 import re
 import math
+import datetime
 from typing import List, Dict, Tuple, Any
 from psycopg2 import sql
 from psycopg2.extras import execute_values
@@ -40,15 +41,18 @@ def upload_scrape_data(
     """
     Inserts scraped data into scrape_data and corresponding filters into scrape_data_filter
     using two bulk-insert statements. Converts NaN → None and empty-string product_id/link → None
-    so that columns declared NULLable accept them. Uses execute_values(fetch=True) to retrieve
-    all RETURNING ids from every page of the batch.
+    so that columns declared NULLable accept them. If scrape_date is missing, uses current UTC time.
+    Uses execute_values(fetch=True) to retrieve all RETURNING ids from every page of the batch.
     """
     inserted_ids: List[int] = []
 
     # 1) Build tuples for scrape_data insertion
     main_insert_values: List[Tuple[Any, ...]] = []
     for rec in records:
-        scrape_date = rec.get('date') or rec.get('scrape_date')
+        # If rec has no 'scrape_date', fall back to now()
+        sd = rec.get('scrape_date')
+        if sd is None:
+            sd = datetime.datetime.utcnow()
 
         # Convert empty-string product_id → None
         pid_raw = rec.get('product_id')
@@ -75,7 +79,7 @@ def upload_scrape_data(
             (
                 campaign_id,
                 scrape_type_id,
-                scrape_date,
+                sd,         # guaranteed not None
                 kw,
                 pos,
                 pid,      # possibly None

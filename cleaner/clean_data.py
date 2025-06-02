@@ -1,3 +1,5 @@
+# ── cleaner/clean_data.py ──
+
 import pandas as pd
 
 
@@ -21,7 +23,7 @@ def clean_popular_products(df: pd.DataFrame) -> pd.DataFrame:
         'has_product_page'
     ]
     df_clean = df.copy()
-    
+
     # Check if 'date' exists but 'scrape_date' doesn't, and rename it
     if 'date' in df_clean.columns and 'scrape_date' not in df_clean.columns:
         df_clean['scrape_date'] = df_clean['date']
@@ -55,12 +57,19 @@ def clean_shopping_tab(df: pd.DataFrame) -> pd.DataFrame:
     """
     df_clean = df.copy()
 
-    # Rename and parse date
+    # Rename & parse date into 'scrape_date'
     if 'Date' in df_clean.columns:
-        df_clean['date'] = pd.to_datetime(df_clean['Date'], dayfirst=True, errors='coerce')
+        df_clean['scrape_date'] = pd.to_datetime(df_clean['Date'], dayfirst=True, errors='coerce')
         df_clean = df_clean.drop(columns=['Date'])
+    elif 'date' in df_clean.columns:
+        # If already lowercase 'date', rename to 'scrape_date'
+        df_clean['scrape_date'] = pd.to_datetime(df_clean['date'], errors='coerce')
+        df_clean = df_clean.drop(columns=['date'])
+    else:
+        # If neither exists, create a scrape_date from now (as fallback)
+        df_clean['scrape_date'] = pd.Timestamp.utcnow()
 
-    # Normalize column names
+    # Normalize column names (lowercase, underscores)
     df_clean.columns = [c.strip().lower().replace(' ', '_') for c in df_clean.columns]
     if 'query' in df_clean.columns and 'keyword' not in df_clean.columns:
         df_clean = df_clean.rename(columns={'query': 'keyword'})
@@ -78,9 +87,14 @@ def clean_shopping_tab(df: pd.DataFrame) -> pd.DataFrame:
     # Drop image if present
     df_clean = df_clean.loc[:, [c for c in df_clean.columns if c != 'image']]
 
-    # Order columns
+    # Ensure `product_id`, `title`, `link`, `merchant`, `filters_raw` exist
+    for col in ['product_id', 'title', 'link', 'merchant', 'filters_raw']:
+        if col not in df_clean.columns:
+            df_clean[col] = None
+
+    # Reorder to match uploader’s expectations
     cols = [
-        'date', 'keyword', 'position', 'product_id',
+        'scrape_date', 'keyword', 'position', 'product_id',
         'title', 'link', 'price', 'merchant', 'filters_raw'
     ]
     return df_clean[[c for c in cols if c in df_clean.columns]]
