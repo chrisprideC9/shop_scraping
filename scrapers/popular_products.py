@@ -13,59 +13,70 @@ BASE_URL = "https://api.valueserp.com/search"
 
 def fetch_popular_products(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Fetches the top N shopping results for a given keyword using the ValueSERP API.
-
-    Args:
-        keyword: The search query.
-        top_n: Number of top results to return.
-        location: Geographical location parameter for ValueSERP.
-
-    Returns:
-        A list of dicts, each containing:
-          - date (ISO string)
-          - keyword
-          - title, link, price, merchant, delivery (if available)
+    Fetches the top N "popular products" entries from the ValueSERP popular_products payload.
     """
     params = {
         "api_key": API_KEY,
-        "search_type": "shopping",
         "q": keyword,
-        "location": location
+        "location": location,
+        "gl": "au",
+        "hl": "en",
+        "google_domain": "google.com.au",
+        "include_ai_overview": "false",
+        "ads_optimized": "false",
+        "engine": "google"
     }
     response = requests.get(BASE_URL, params=params)
     response.raise_for_status()
     data = response.json()
 
-    raw_results = data.get("shopping_results", [])[:top_n]
-    today = datetime.date.today().isoformat()
+    popular = data.get("popular_products", [])[:top_n]
+    scrape_date = datetime.datetime.utcnow().isoformat()
     records = []
 
-    for item in raw_results:
+    for item in popular:
+        # Handle price and raw price formats
+        price = None
+        price_raw = None
+        if item.get("price") is not None:
+            try:
+                price = float(item["price"])
+                price_raw = str(item["price"])
+            except (TypeError, ValueError):
+                price_raw = str(item.get("price"))
+        elif isinstance(item.get("regular_price"), dict):
+            val = item["regular_price"].get("value")
+            if val is not None:
+                price = float(val)
+                symbol = item["regular_price"].get("symbol", "")
+                price_raw = f"{symbol}{val}"
+        else:
+            price_raw = item.get("product_status")
+
         records.append({
-            "date": today,
+            "scrape_date": scrape_date,
             "keyword": keyword,
+            "position": item.get("position"),
+            "product_id": None,
             "title": item.get("title", ""),
             "link": item.get("link", ""),
-            "price": item.get("price", ""),
+            "rating": item.get("rating"),
+            "reviews": item.get("reviews"),
+            "price": price,
+            "price_raw": price_raw,
             "merchant": item.get("merchant", ""),
-            "delivery": item.get("delivery", "")
+            "is_carousel": False,
+            "carousel_position": None,
+            "has_product_page": False
         })
 
-    # Respect API rate limits
     time.sleep(1)
-
     return records
 
 
 def scrape_for_keywords(keywords: list[str], top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Runs fetch_popular_products for each keyword in the list.
-
-    Args:
-        keywords: List of search queries.
-
-    Returns:
-        Combined list of all records.
+    Runs fetch_popular_products() for each keyword and returns a flat list of records.
     """
     all_results = []
     for kw in keywords:
@@ -75,6 +86,11 @@ def scrape_for_keywords(keywords: list[str], top_n: int = 10, location: str = "A
         except requests.HTTPError as e:
             print(f"HTTP error for '{kw}': {e}")
         except Exception as e:
-            print(f"Error fetching results for '{kw}': {e}")
+            print(f"Error fetching popular products for '{kw}': {e}")
     return all_results
 
+
+if __name__ == "__main__":
+    sample_kw = ["mens running shoes"]
+    for record in scrape_for_keywords(sample_kw):
+        print(record)

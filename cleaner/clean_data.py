@@ -21,6 +21,11 @@ def clean_popular_products(df: pd.DataFrame) -> pd.DataFrame:
         'has_product_page'
     ]
     df_clean = df.copy()
+    
+    # Check if 'date' exists but 'scrape_date' doesn't, and rename it
+    if 'date' in df_clean.columns and 'scrape_date' not in df_clean.columns:
+        df_clean['scrape_date'] = df_clean['date']
+        df_clean = df_clean.drop(columns=['date'])
 
     # Ensure all expected columns exist
     for col in expected_cols:

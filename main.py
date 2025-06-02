@@ -29,7 +29,7 @@ def main():
         logging.info(f"Campaign {campaign_id} ({domain}): {len(keywords)} keywords.")
 
         # Run popular products scraper (scrape_type_id=1)
-        logging.info(f"Running popular-products scraper for campaign {campaign_id}.")
+        logging.info(f"Running popular-products scraper for {domain}.")
         raw_popular = popular_scrape(keywords)
         df_popular = pd.DataFrame(raw_popular)
         df_popular_clean = clean_popular_products(df_popular)
@@ -39,7 +39,7 @@ def main():
             logging.info(f"Inserted {len(inserted_popular)} rows for popular products.")
 
         # Run shopping tab scraper (scrape_type_id=2)
-        logging.info(f"Running shopping-tab scraper for campaign {campaign_id}.")
+        logging.info(f"Running shopping-tab scraper for {domain}.")
         raw_shopping_tab = scrape_shopping_tab_for_keywords(keywords)
         df_shopping_tab = pd.DataFrame(raw_shopping_tab)
         df_shopping_tab_clean = clean_shopping_tab(df_shopping_tab)
