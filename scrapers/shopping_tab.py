@@ -19,7 +19,7 @@ BASE_URL = "https://api.valueserp.com/search"
 PARALLEL_REQUESTS = int(os.getenv("PARALLEL_REQUESTS", "3"))
 
 # Delay (in seconds) between consecutive requests, to avoid hammering the API
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "0.5"))
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "3"))
 
 
 def extract_product_id_from_link(link: str) -> str:

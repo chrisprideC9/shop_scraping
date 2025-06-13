@@ -19,7 +19,7 @@ BASE_URL = "https://api.valueserp.com/search"
 PARALLEL_REQUESTS = int(os.getenv("PARALLEL_REQUESTS", "3"))
 
 # Delay (in seconds) between consecutive requests, to avoid hammering the API
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "0.5"))
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "3"))
 
 
 def extract_product_id_from_link(link: str) -> str:
@@ -76,8 +76,15 @@ def fetch_popular_products(keyword: str, top_n: int = 10, location: str = "Austr
         "engine": "google",  # ensure you get the “popular_products” block
     }
 
-    response = requests.get(BASE_URL, params=params, timeout=30)
-    response.raise_for_status()
+    try:
+        response = requests.get(BASE_URL, params=params, timeout=30)
+        response.raise_for_status()
+    except requests.HTTPError as err:
+        # Print the HTTP error plus the API’s own error message
+        print(f"✗ HTTP error for '{keyword}': {err}")
+        if err.response is not None:
+            print("Response body:", err.response.text)
+        return []
     data = response.json()
 
     popular = data.get("popular_products", [])
