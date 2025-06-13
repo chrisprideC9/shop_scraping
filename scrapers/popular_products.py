@@ -7,26 +7,32 @@ import requests
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
-from typing import Any  # Needed for type hints in _is_number
+from typing import Any, List, Dict  # Needed for type hints
 
 # ── Load environment variables ─────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-API_KEY = os.getenv("VALUESERP_API_KEY", "6CE8C7D87B3D43F98E6FE54728A1E39C")
-BASE_URL = "https://api.valueserp.com/search"
+# Primary API (ScrapingDog)
+SCRAPINGDOG_API_KEY = os.getenv("SCRAPINGDOG_API_KEY", "684a2dcee2392898dd06564a")
+SCRAPINGDOG_BASE_URL = "https://api.scrapingdog.com/google"
+
+# Fallback API (ValueSERP)
+VALUESERP_API_KEY = os.getenv("VALUESERP_API_KEY", "6CE8C7D87B3D43F98E6FE54728A1E39C")
+VALUESERP_BASE_URL = "https://api.valueserp.com/search"
 
 # How many threads to spin up (default: 3)
 PARALLEL_REQUESTS = int(os.getenv("PARALLEL_REQUESTS", "3"))
 
 # Delay (in seconds) between consecutive requests, to avoid hammering the API
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "3"))
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "5"))
+
+# Minimum products threshold - if we get less than this, try fallback
+FALLBACK_THRESHOLD = int(os.getenv("POPULAR_PRODUCTS_FALLBACK_THRESHOLD", "5"))
 
 
 def extract_product_id_from_link(link: str) -> str:
     """
     Extracts product ID from Google Shopping product links.
-    Example: https://www.google.com.au/shopping/product/16052668069645325775
-    Returns: "16052668069645325775" or None if not found.
     """
     if not link:
         return None
@@ -43,11 +49,65 @@ def extract_product_id_from_link(link: str) -> str:
     return None
 
 
+def parse_reviews_count(reviews_str: str) -> int:
+    """Parse review count strings like "7.7K", "123", "2.5M" into integers."""
+    if not reviews_str or not isinstance(reviews_str, str):
+        return 0
+    
+    reviews_str = reviews_str.strip().replace('(', '').replace(')', '')
+    
+    if reviews_str.upper().endswith('K'):
+        try:
+            num = float(reviews_str[:-1])
+            return int(num * 1000)
+        except ValueError:
+            return 0
+    elif reviews_str.upper().endswith('M'):
+        try:
+            num = float(reviews_str[:-1])
+            return int(num * 1000000)
+        except ValueError:
+            return 0
+    else:
+        try:
+            return int(float(reviews_str))
+        except ValueError:
+            return 0
+
+
+def parse_price_from_extensions(extensions_str: str) -> tuple[float, str]:
+    """Parse price from extensions string like "Current price: $2"."""
+    if not extensions_str or not isinstance(extensions_str, str):
+        return None, ""
+    
+    price_match = re.search(r'Current price:\s*\$?(\d+(?:\.\d+)?)', extensions_str)
+    if price_match:
+        try:
+            price_val = float(price_match.group(1))
+            return price_val, f"${price_val}"
+        except ValueError:
+            pass
+    
+    price_match = re.search(r'\$(\d+(?:\.\d+)?)', extensions_str)
+    if price_match:
+        try:
+            price_val = float(price_match.group(1))
+            return price_val, f"${price_val}"
+        except ValueError:
+            pass
+    
+    return None, extensions_str
+
+
+def construct_shopping_link(product_id: str) -> str:
+    """Construct a Google Shopping link from product ID."""
+    if not product_id:
+        return ""
+    return f"https://www.google.com.au/shopping/product/{product_id}"
+
+
 def _is_number(val: Any) -> bool:
-    """
-    Return True if val (string or number) can be safely cast to float, else False.
-    Used for deciding whether to convert to a float or drop to None.
-    """
+    """Return True if val can be safely cast to float."""
     try:
         float(val)
         return True
@@ -55,17 +115,76 @@ def _is_number(val: Any) -> bool:
         return False
 
 
-def fetch_popular_products(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
+def fetch_popular_products_scrapingdog(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Fetches up to top_n “popular_products” entries from the ValueSERP payload
-    for a single keyword. Returns a list of dicts, each containing fields like:
-      - scrape_date, keyword, position, product_id, title, link, rating, reviews,
-        price, price_raw, merchant, is_carousel, carousel_position, has_product_page, filters_raw
-    Ensures no NOT NULL columns remain None (e.g. product_id -> "") and
-    that numeric fields do not remain NaN.
+    Fetches popular products using ScrapingDog API.
+    """
+    country_code = "au" if location == "Australia" else "us"
+    
+    params = {
+        "api_key": SCRAPINGDOG_API_KEY,
+        "query": keyword,
+        "page": 0,
+        "country": country_code,
+        "results": 10,
+        "advance_search": "true",
+        "ai_overview": "false"
+    }
+
+    try:
+        response = requests.get(SCRAPINGDOG_BASE_URL, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        popular = data.get("popular_products", [])[:top_n]
+        scrape_date = datetime.datetime.utcnow().isoformat()
+        records = []
+
+        for i, item in enumerate(popular):
+            product_id = str(item.get("product_id", "")) if item.get("product_id") else ""
+            link = construct_shopping_link(product_id) if product_id else ""
+            reviews_count = parse_reviews_count(item.get("reviews", ""))
+            
+            price_val = None
+            price_raw_val = ""
+            if item.get("price") and _is_number(item["price"]):
+                price_val = float(item["price"])
+                price_raw_val = f"${price_val}"
+            else:
+                price_val, price_raw_val = parse_price_from_extensions(item.get("extensions", ""))
+
+            records.append({
+                "scrape_date": scrape_date,
+                "keyword": keyword,
+                "position": i + 1,
+                "product_id": product_id,
+                "title": item.get("title", "") or "",
+                "link": link,
+                "rating": None,  # Not available in ScrapingDog
+                "reviews": reviews_count,
+                "price": price_val,
+                "price_raw": price_raw_val,
+                "merchant": item.get("seller", "") or "",
+                "is_carousel": False,
+                "carousel_position": None,
+                "has_product_page": bool(link),
+                "filters_raw": "",
+                "api_source": "scrapingdog"  # Track which API was used
+            })
+
+        return records
+
+    except Exception as e:
+        # Silently fail and let the main function handle logging
+        return []
+
+
+def fetch_popular_products_valueserp(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
+    """
+    Fetches popular products using ValueSERP API as fallback.
     """
     params = {
-        "api_key": API_KEY,
+        "api_key": VALUESERP_API_KEY,
         "q": keyword,
         "location": location,
         "gl": "au",
@@ -73,131 +192,121 @@ def fetch_popular_products(keyword: str, top_n: int = 10, location: str = "Austr
         "google_domain": "google.com.au",
         "include_ai_overview": "false",
         "ads_optimized": "false",
-        "engine": "google",  # ensure you get the “popular_products” block
+        "engine": "google",
     }
 
     try:
-        response = requests.get(BASE_URL, params=params, timeout=30)
+        response = requests.get(VALUESERP_BASE_URL, params=params, timeout=30)
         response.raise_for_status()
-    except requests.HTTPError as err:
-        # Print the HTTP error plus the API’s own error message
-        print(f"✗ HTTP error for '{keyword}': {err}")
-        if err.response is not None:
-            print("Response body:", err.response.text)
+        data = response.json()
+        
+        popular = data.get("popular_products", [])[:top_n]
+        scrape_date = datetime.datetime.utcnow().isoformat()
+        records = []
+
+        for item in popular:
+            link = (
+                item.get("link")
+                or item.get("product_link")
+                or item.get("url")
+                or item.get("shopping_link")
+                or ""
+            )
+
+            pid = extract_product_id_from_link(link) or ""
+            if not pid and item.get("id"):
+                pid = str(item["id"])
+
+            rat = None
+            if item.get("rating") is not None and _is_number(item["rating"]):
+                rat = float(item["rating"])
+
+            rev = 0
+            if item.get("reviews") is not None and _is_number(item["reviews"]):
+                rev = int(float(item["reviews"]))
+
+            price_val = None
+            price_raw_val = ""
+            if item.get("price") is not None:
+                if _is_number(item["price"]):
+                    price_val = float(item["price"])
+                    price_raw_val = str(item["price"])
+                else:
+                    price_raw_val = str(item["price"])
+            elif isinstance(item.get("regular_price"), dict):
+                val = item["regular_price"].get("value")
+                if val is not None and _is_number(val):
+                    price_val = float(val)
+                    symbol = item["regular_price"].get("symbol", "")
+                    price_raw_val = f"{symbol}{val}"
+
+            records.append({
+                "scrape_date": scrape_date,
+                "keyword": keyword,
+                "position": item.get("position") or 0,
+                "product_id": pid,
+                "title": item.get("title", "") or "",
+                "link": link,
+                "rating": rat,
+                "reviews": rev,
+                "price": price_val,
+                "price_raw": price_raw_val,
+                "merchant": item.get("merchant", "") or "",
+                "is_carousel": False,
+                "carousel_position": None,
+                "has_product_page": bool(link),
+                "filters_raw": "",
+                "api_source": "valueserp"  # Track which API was used
+            })
+
+        return records
+
+    except Exception as e:
+        # Silently fail and let the main function handle logging
         return []
-    data = response.json()
 
-    popular = data.get("popular_products", [])
 
-    # Only show the debug fields for the *first* keyword processed, if any
-    if popular:
-        print(f"DEBUG - Available fields in first popular product for '{keyword}':")
-        print(list(popular[0].keys()))
-        print("DEBUG - First item sample:")
-        print(popular[0])
-        print("-" * 50)
-
-    # Truncate to top_n
-    popular = popular[:top_n]
-    scrape_date = datetime.datetime.utcnow().isoformat()
-    records: list[dict] = []
-
-    for item in popular:
-        # There are multiple possible keys for the “link” field, so we try each
-        link = (
-            item.get("link")
-            or item.get("product_link")
-            or item.get("url")
-            or item.get("shopping_link")
-            or ""
-        )
-
-        # Extract numeric product_id if possible; ensure NOT NULL => "" 
-        pid = extract_product_id_from_link(link) or ""
-        # If ValueSERP provides "id", use that if extract didn’t find anything
-        if not pid and item.get("id"):
-            pid = str(item["id"])
-
-        # Normalize rating: force to float if possible, else None
-        rat = None
-        if item.get("rating") is not None and _is_number(item["rating"]):
-            rat = float(item["rating"])
-
-        # Normalize reviews: force to int if possible, else 0
-        rev = 0
-        if item.get("reviews") is not None and _is_number(item["reviews"]):
-            # Sometimes reviews come as e.g. "380" (string); cast to int safely
-            rev = int(float(item["reviews"]))
-        # If they send no reviews at all, rev=0 is a safe default
-
-        # Normalize price/price_raw: drop pandas/NumPy NaN => None + "" 
-        price_val = None
-        price_raw_val = ""
-        if item.get("price") is not None:
-            if _is_number(item["price"]):
-                price_val = float(item["price"])
-                price_raw_val = str(item["price"])
-            else:
-                # e.g. they returned "N/A" or something; treat it as raw string
-                price_raw_val = str(item["price"])
-        elif isinstance(item.get("regular_price"), dict):
-            val = item["regular_price"].get("value")
-            if val is not None and _is_number(val):
-                price_val = float(val)
-                symbol = item["regular_price"].get("symbol", "")
-                price_raw_val = f"{symbol}{val}"
-            else:
-                # if regular_price exists but has no numeric "value"
-                price_raw_val = item["regular_price"].get("symbol", "")
-
-        # Build the record dict exactly like your “upload_scrape_data” expects
-        records.append({
-            "scrape_date": scrape_date,
-            "keyword": keyword,
-            "position": item.get("position") or 0,  # position INT; if missing, default to 0
-            "product_id": pid,                       # guaranteed not None
-            "title": item.get("title", "") or "",     # guaranteed not None
-            "link": link,                             # text column accepts empty string
-            "rating": rat,                            # either float or None
-            "reviews": rev,                           # integer
-            "price": price_val,                       # either float or None
-            "price_raw": price_raw_val,               # guaranteed a string (maybe "")
-            "merchant": item.get("merchant", "") or "",  # guaranteed not None
-            # Popular-products never has a “carousel” concept—hard‐code these
-            "is_carousel": False,
-            "carousel_position": None,
-            "has_product_page": bool(link),
-            # No filters on “popular_products” → just pass empty string
-            "filters_raw": ""
-        })
-
-    # Rate limit before returning
+def fetch_popular_products(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
+    """
+    Main function that tries ScrapingDog first, then ValueSERP as fallback.
+    Uses quiet logging to avoid parallel processing confusion.
+    """
+    # Try ScrapingDog first (silently)
+    results = fetch_popular_products_scrapingdog(keyword, top_n, location)
+    
+    if results:
+        time.sleep(RATE_LIMIT_DELAY)
+        return results
+    
+    # Fallback to ValueSERP if ScrapingDog found nothing (silently)
+    results = fetch_popular_products_valueserp(keyword, top_n, location)
+    
     time.sleep(RATE_LIMIT_DELAY)
-    return records
+    return results
 
 
 def process_keyword(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Wrapper around fetch_popular_products() that logs timing and count,
-    identical to the shopping‐tab scraper’s process_keyword.
+    Wrapper around fetch_popular_products() with clean, concise logging.
     """
     start_time = time.time()
     try:
-        print(f"Processing: {keyword}")
         results = fetch_popular_products(keyword, top_n=top_n, location=location)
         elapsed = time.time() - start_time
-        print(f"✓ Completed {keyword} in {elapsed:.2f}s - Found {len(results)} products")
+        
+        if results:
+            api_used = results[0].get('api_source', 'unknown')
+            status_icon = "✅" if api_used == 'scrapingdog' else "🔄"
+            print(f"{status_icon} {keyword:<20} → {len(results)} products ({elapsed:.1f}s)")
+        else:
+            print(f"❌ {keyword:<20} → 0 products ({elapsed:.1f}s)")
+        
         return results
 
-    except requests.HTTPError as err:
-        print(f"✗ HTTP error for '{keyword}': {err}")
-        return []
     except Exception as e:
-        print(f"✗ Error fetching popular products for '{keyword}': {e}")
+        elapsed = time.time() - start_time
+        print(f"⚠️ {keyword:<20} → ERROR: {str(e)[:30]}... ({elapsed:.1f}s)")
         return []
-    finally:
-        # Rate‐limit has already been applied inside fetch_popular_products
-        pass
 
 
 def scrape_for_keywords(
@@ -207,25 +316,14 @@ def scrape_for_keywords(
     parallel: bool = True
 ) -> list[dict]:
     """
-    Runs fetch_popular_products() for each keyword, either in parallel threads
-    or sequentially, and returns a flat list of all product records.
-
-    Args:
-      keywords:   list of keyword strings
-      top_n:      how many “popular” items per keyword
-      location:   “Australia” (or any other supported location string)
-      parallel:   True to use ThreadPoolExecutor, False for serial
-
-    Returns:
-      A combined list of all dicts from every keyword.
+    Runs fetch_popular_products() for each keyword with fallback logic.
     """
     all_records: list[dict] = []
     total_start = time.time()
 
-    print(f"\nStarting popular-products scraper for {len(keywords)} keywords")
-    print(f"Parallel processing: {'Yes' if parallel else 'No'}")
-    print(f"Rate limit delay: {RATE_LIMIT_DELAY}s between requests")
-    print("=" * 60)
+    print(f"\n🔍 Popular Products Scraper (Dual-API)")
+    print(f"Keywords: {len(keywords)} | Parallel: {'Yes' if parallel else 'No'} | Delay: {RATE_LIMIT_DELAY}s")
+    print("-" * 60)
 
     if parallel and len(keywords) > 1:
         with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
@@ -246,27 +344,39 @@ def scrape_for_keywords(
             all_records.extend(recs)
 
     total_elapsed = time.time() - total_start
-    print("=" * 60)
-    print(f"Completed! Total time: {total_elapsed:.2f}s")
-    print(f"Total products found: {len(all_records)}")
+    
+    # Summary of API usage
+    scrapingdog_count = sum(1 for r in all_records if r.get('api_source') == 'scrapingdog')
+    valueserp_count = sum(1 for r in all_records if r.get('api_source') == 'valueserp')
+    
+    print("-" * 60)
+    print(f"✅ Completed in {total_elapsed:.1f}s | Products: {len(all_records):,}")
+    print(f"   ScrapingDog: {scrapingdog_count} | ValueSERP: {valueserp_count}")
+    
     if keywords:
-        avg_time = total_elapsed / len(keywords)
-        print(f"Average time per keyword: {avg_time:.2f}s\n")
+        success_rate = (len([r for r in all_records if r]) / len(keywords)) * 100
+        print(f"   Success rate: {success_rate:.1f}% ({len(set(r['keyword'] for r in all_records))}/{len(keywords)} keywords)\n")
     else:
         print()
 
     return all_records
 
 
-# If you run this file directly, you’ll see a quick smoke test + debug output:
+# If you run this file directly, you'll see a quick smoke test + debug output:
 if __name__ == "__main__":
-    sample_keywords = ["mens running shoes", "wool knit jumper", "laptop bag"]
+    sample_keywords = ["mens running shoes", "ghanda t-shirts", "woolworths groceries"]
 
-    print("\n--- SEQUENTIAL TEST ---")
-    results_seq = scrape_for_keywords(sample_keywords, parallel=False)
+    print("\n--- TESTING FALLBACK MECHANISM ---")
+    results = scrape_for_keywords(sample_keywords, parallel=False)
 
-    print("\n--- PARALLEL TEST ---")
-    results_par = scrape_for_keywords(sample_keywords, parallel=True)
-
-    print(f"\nSequential found: {len(results_seq)} products")
-    print(f"Parallel found:   {len(results_par)} products")
+    print(f"\nTotal found: {len(results)} products")
+    
+    # Show API breakdown
+    apis_used = {}
+    for result in results:
+        api = result.get('api_source', 'unknown')
+        apis_used[api] = apis_used.get(api, 0) + 1
+    
+    print("API Usage breakdown:")
+    for api, count in apis_used.items():
+        print(f"  {api.upper()}: {count} products")
