@@ -21,7 +21,7 @@ BASE_URL = "https://api.valueserp.com/search"
 PARALLEL_REQUESTS = int(os.getenv("PARALLEL_REQUESTS", "3"))
 
 # Delay (in seconds) between consecutive requests, to avoid hammering the API
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "3"))
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "5"))
 
 # Timeout for API requests (default: 45s, increased from 30s)
 REQUEST_TIMEOUT = int(os.getenv("VALUESERP_TIMEOUT", "45"))
@@ -236,7 +236,8 @@ def scrape_shopping_tab_for_keywords(
     print(f"🛒 Completed in {total_elapsed:.1f}s | Products: {len(all_records):,}")
     
     if keywords:
-        success_rate = (len([r for r in all_records if r]) / len(keywords)) * 100
+        keywords_with_results = len(set(r['keyword'] for r in all_records if r))
+        success_rate = (keywords_with_results / len(keywords)) * 100
         keywords_with_results = len(set(r['keyword'] for r in all_records if r))
         print(f"   Success rate: {success_rate:.1f}% ({keywords_with_results}/{len(keywords)} keywords)\n")
     else:

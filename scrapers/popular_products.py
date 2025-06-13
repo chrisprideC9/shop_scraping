@@ -4,6 +4,8 @@ import os
 import time
 import datetime
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
@@ -28,6 +30,24 @@ RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "5"))
 
 # Minimum products threshold - if we get less than this, try fallback
 FALLBACK_THRESHOLD = int(os.getenv("POPULAR_PRODUCTS_FALLBACK_THRESHOLD", "5"))
+
+
+def create_retry_session():
+    """Create a requests session with retry logic for handling timeouts and server errors."""
+    session = requests.Session()
+    
+    retry_strategy = Retry(
+        total=3,                    # Total number of retries
+        backoff_factor=2,           # Wait 2s, then 4s, then 8s between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry
+        allowed_methods=["GET"]     # Only retry GET requests
+    )
+    
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
 
 
 def extract_product_id_from_link(link: str) -> str:
@@ -117,7 +137,7 @@ def _is_number(val: Any) -> bool:
 
 def fetch_popular_products_scrapingdog(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Fetches popular products using ScrapingDog API.
+    Fetches popular products using ScrapingDog API with retry logic.
     """
     country_code = "au" if location == "Australia" else "us"
     
@@ -131,8 +151,10 @@ def fetch_popular_products_scrapingdog(keyword: str, top_n: int = 10, location: 
         "ai_overview": "false"
     }
 
+    session = create_retry_session()
+
     try:
-        response = requests.get(SCRAPINGDOG_BASE_URL, params=params, timeout=30)
+        response = session.get(SCRAPINGDOG_BASE_URL, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         
@@ -174,14 +196,23 @@ def fetch_popular_products_scrapingdog(keyword: str, top_n: int = 10, location: 
 
         return records
 
+    except requests.exceptions.Timeout:
+        # Silent timeout - let main function handle logging
+        return []
+    except requests.exceptions.HTTPError as e:
+        # Silent HTTP error - let main function handle logging
+        return []
+    except requests.exceptions.RequestException as e:
+        # Silent request error - let main function handle logging
+        return []
     except Exception as e:
-        # Silently fail and let the main function handle logging
+        # Silent general error - let main function handle logging
         return []
 
 
 def fetch_popular_products_valueserp(keyword: str, top_n: int = 10, location: str = "Australia") -> list[dict]:
     """
-    Fetches popular products using ValueSERP API as fallback.
+    Fetches popular products using ValueSERP API as fallback with retry logic.
     """
     params = {
         "api_key": VALUESERP_API_KEY,
@@ -195,8 +226,10 @@ def fetch_popular_products_valueserp(keyword: str, top_n: int = 10, location: st
         "engine": "google",
     }
 
+    session = create_retry_session()
+
     try:
-        response = requests.get(VALUESERP_BASE_URL, params=params, timeout=30)
+        response = session.get(VALUESERP_BASE_URL, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         
@@ -261,8 +294,17 @@ def fetch_popular_products_valueserp(keyword: str, top_n: int = 10, location: st
 
         return records
 
+    except requests.exceptions.Timeout:
+        # Silent timeout - let main function handle logging
+        return []
+    except requests.exceptions.HTTPError as e:
+        # Silent HTTP error - let main function handle logging
+        return []
+    except requests.exceptions.RequestException as e:
+        # Silent request error - let main function handle logging
+        return []
     except Exception as e:
-        # Silently fail and let the main function handle logging
+        # Silent general error - let main function handle logging
         return []
 
 
@@ -321,7 +363,7 @@ def scrape_for_keywords(
     all_records: list[dict] = []
     total_start = time.time()
 
-    print(f"\n🔍 Popular Products Scraper (Dual-API)")
+    print(f"\n🔍 Popular Products Scraper (Dual-API + Retry)")
     print(f"Keywords: {len(keywords)} | Parallel: {'Yes' if parallel else 'No'} | Delay: {RATE_LIMIT_DELAY}s")
     print("-" * 60)
 
