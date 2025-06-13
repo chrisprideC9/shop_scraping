@@ -396,7 +396,8 @@ def scrape_for_keywords(
     print(f"   ScrapingDog: {scrapingdog_count} | ValueSERP: {valueserp_count}")
     
     if keywords:
-        success_rate = (len([r for r in all_records if r]) / len(keywords)) * 100
+        keywords_with_results = len(set(r['keyword'] for r in all_records if r))
+        success_rate = (keywords_with_results / len(keywords)) * 100
         print(f"   Success rate: {success_rate:.1f}% ({len(set(r['keyword'] for r in all_records))}/{len(keywords)} keywords)\n")
     else:
         print()
