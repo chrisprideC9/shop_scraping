@@ -4,8 +4,10 @@ import os
 import ssl
 import logging
 import requests
+import pandas as pd
+import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
@@ -41,37 +43,121 @@ class SlackNotifier:
             self.client = None
             logging.warning("Slack bot token not provided. Slack notifications disabled.")
     
+    def generate_failed_popular_products_csv(self, summary_data: Dict) -> Tuple[str, int]:
+        """
+        Generate CSV file with keywords that had no popular products results.
+        Returns (file_path, failed_count) or (None, 0) if no failures.
+        """
+        campaigns = summary_data.get('campaigns_processed', [])
+        failed_keywords = []
+        
+        for campaign in campaigns:
+            domain = campaign.get('domain', 'Unknown')
+            campaign_id = campaign.get('campaign_id')
+            keywords_no_popular = campaign.get('keywords_with_no_popular', [])
+            api_usage = campaign.get('api_usage', '')
+            
+            for keyword in keywords_no_popular:
+                failed_keywords.append({
+                    'campaign_id': campaign_id,
+                    'domain': domain,
+                    'keyword': keyword,
+                    'scrape_date': summary_data.get('start_time', datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
+                    'api_usage': api_usage,
+                    'reason': 'No popular products found'
+                })
+        
+        if not failed_keywords:
+            return None, 0
+        
+        # Create DataFrame and CSV
+        df = pd.DataFrame(failed_keywords)
+        
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(
+            mode='w', 
+            delete=False, 
+            suffix='.csv', 
+            prefix='failed_popular_products_'
+        )
+        
+        df.to_csv(temp_file.name, index=False)
+        temp_file.close()
+        
+        return temp_file.name, len(failed_keywords)
+    
     def send_scraping_summary(self, summary_data: Dict) -> bool:
         """
-        Sends a formatted scraping summary to Slack.
+        Sends a formatted scraping summary to Slack with CSV attachment for failed keywords.
         Uses fallback method if SSL issues occur.
         """
         if not self.token:
             logging.warning("Slack token not available. Skipping notification.")
             return False
         
+        csv_path = None
         try:
+            # Generate CSV for failed popular products keywords
+            csv_path, failed_count = self.generate_failed_popular_products_csv(summary_data)
+            
             message_blocks = self._build_summary_blocks(summary_data)
+            
+            # Add CSV info to message if there are failures
+            if csv_path and failed_count > 0:
+                message_blocks.append({
+                    "type": "divider"
+                })
+                message_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📎 *Failed Keywords Report*\n{failed_count} keywords had no popular products - detailed CSV attached below"
+                    }
+                })
             
             # First try with WebClient
             if self.client:
                 try:
+                    # Send main message first
                     response = self.client.chat_postMessage(
                         channel=self.channel,
                         blocks=message_blocks,
                         text="Scraping Run Summary"
                     )
+                    
+                    # Upload CSV file if exists
+                    if csv_path and failed_count > 0:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+                        self.client.files_upload_v2(
+                            channel=self.channel,
+                            file=csv_path,
+                            filename=f"failed_popular_products_{timestamp}.csv",
+                            title="Keywords with No Popular Products",
+                            thread_ts=response['ts']  # Upload as reply to main message
+                        )
+                        logging.info(f"✓ CSV uploaded with {failed_count} failed keywords")
+                    
                     logging.info(f"Slack message sent successfully: {response['ts']}")
                     return True
+                    
                 except Exception as e:
                     logging.warning(f"WebClient failed, trying requests fallback: {e}")
             
-            # Fallback to direct requests if WebClient fails
+            # Fallback to direct requests if WebClient fails (without file upload for simplicity)
             return self._send_via_requests(message_blocks)
             
         except Exception as e:
             logging.error(f"Unexpected error sending Slack message: {e}")
             return False
+        
+        finally:
+            # Cleanup temporary file
+            if csv_path and os.path.exists(csv_path):
+                try:
+                    os.unlink(csv_path)
+                    logging.debug(f"Cleaned up temp file: {csv_path}")
+                except Exception as e:
+                    logging.warning(f"Failed to cleanup temp file {csv_path}: {e}")
     
     def _send_via_requests(self, message_blocks: List[Dict]) -> bool:
         """
@@ -240,19 +326,21 @@ class SlackNotifier:
                 api_usage = campaign.get('api_usage', '')
                 
                 # Build campaign summary text
-                campaign_text = f"*{domain}*\n• {keywords_count} keywords • {popular_count} popular products • {shopping_count} shopping products"
+                campaign_text = f"*{domain}*\n• {keywords_count} keywords → {popular_count} popular products, {shopping_count} shopping products"
                 
                 # Add API usage if available
                 if api_usage:
                     campaign_text += f"\n• 🔗 API usage: {api_usage}"
                 
-                # Add keywords with no popular products if any
+                # Add keywords with no popular products (enhanced display)
                 if keywords_no_popular:
                     no_popular_count = len(keywords_no_popular)
+                    success_rate = ((keywords_count - no_popular_count) / keywords_count * 100) if keywords_count > 0 else 0
+                    
                     if no_popular_count <= 3:
-                        campaign_text += f"\n• ⚠️ No popular products: {', '.join(keywords_no_popular)}"
+                        campaign_text += f"\n• ❌ No popular products ({success_rate:.0f}% success): {', '.join(keywords_no_popular)}"
                     else:
-                        campaign_text += f"\n• ⚠️ {no_popular_count} keywords had no popular products: {', '.join(keywords_no_popular[:2])}..."
+                        campaign_text += f"\n• ❌ {no_popular_count} keywords failed ({success_rate:.0f}% success): {', '.join(keywords_no_popular[:2])}..."
                 
                 # Add sample products if any
                 if sample_products:
