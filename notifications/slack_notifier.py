@@ -55,7 +55,6 @@ class SlackNotifier:
             domain = campaign.get('domain', 'Unknown')
             campaign_id = campaign.get('campaign_id')
             keywords_no_popular = campaign.get('keywords_with_no_popular', [])
-            api_usage = campaign.get('api_usage', '')
             
             for keyword in keywords_no_popular:
                 failed_keywords.append({
@@ -63,7 +62,6 @@ class SlackNotifier:
                     'domain': domain,
                     'keyword': keyword,
                     'scrape_date': summary_data.get('start_time', datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
-                    'api_usage': api_usage,
                     'reason': 'No popular products found'
                 })
         
@@ -322,33 +320,18 @@ class SlackNotifier:
                 popular_count = campaign.get('popular_products_found', 0)
                 shopping_count = campaign.get('shopping_products_found', 0)
                 keywords_no_popular = campaign.get('keywords_with_no_popular', [])
-                sample_products = campaign.get('sample_products', [])
-                api_usage = campaign.get('api_usage', '')
                 
-                # Build campaign summary text
+                # Build campaign summary text - REMOVED sample_products and api_usage
                 campaign_text = f"*{domain}*\n• {keywords_count} keywords → {popular_count} popular products, {shopping_count} shopping products"
                 
-                # Add API usage if available
-                if api_usage:
-                    campaign_text += f"\n• 🔗 API usage: {api_usage}"
-                
-                # Add keywords with no popular products (enhanced display)
+                # Show FULL list of keywords with no popular products
                 if keywords_no_popular:
                     no_popular_count = len(keywords_no_popular)
                     success_rate = ((keywords_count - no_popular_count) / keywords_count * 100) if keywords_count > 0 else 0
                     
-                    if no_popular_count <= 3:
-                        campaign_text += f"\n• ❌ No popular products ({success_rate:.0f}% success): {', '.join(keywords_no_popular)}"
-                    else:
-                        campaign_text += f"\n• ❌ {no_popular_count} keywords failed ({success_rate:.0f}% success): {', '.join(keywords_no_popular[:2])}..."
-                
-                # Add sample products if any
-                if sample_products:
-                    sample_count = len(sample_products)
-                    if sample_count <= 2:
-                        campaign_text += f"\n• 📦 Sample products: {', '.join(sample_products)}"
-                    else:
-                        campaign_text += f"\n• 📦 Sample products: {', '.join(sample_products[:2])}... (+{sample_count-2} more)"
+                    # Show all failed keywords, no truncation
+                    failed_keywords_text = ', '.join(keywords_no_popular)
+                    campaign_text += f"\n• ❌ No popular products ({success_rate:.0f}% success): {failed_keywords_text}"
                 
                 blocks.append({
                     "type": "section",
