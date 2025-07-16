@@ -15,11 +15,11 @@ from typing import Any, List, Dict  # Needed for type hints
 load_dotenv()
 
 # Primary API (ScrapingDog)
-SCRAPINGDOG_API_KEY = os.getenv("SCRAPINGDOG_API_KEY", "684a2dcee2392898dd06564a")
+SCRAPINGDOG_API_KEY = os.getenv("SCRAPINGDOG_API_KEY")
 SCRAPINGDOG_BASE_URL = "https://api.scrapingdog.com/google"
 
 # Fallback API (ValueSERP)
-VALUESERP_API_KEY = os.getenv("VALUESERP_API_KEY", "6CE8C7D87B3D43F98E6FE54728A1E39C")
+VALUESERP_API_KEY = os.getenv("VALUESERP_API_KEY")
 VALUESERP_BASE_URL = "https://api.valueserp.com/search"
 
 # How many threads to spin up (default: 3)
