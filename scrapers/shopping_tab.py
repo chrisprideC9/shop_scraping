@@ -14,7 +14,7 @@ from typing import Any  # ← Added so Any is defined
 # ── Load environment variables ─────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-API_KEY = os.getenv("VALUESERP_API_KEY", "6CE8C7D87B3D43F98E6FE54728A1E39C")
+API_KEY = os.getenv("VALUESERP_API_KEY")
 BASE_URL = "https://api.valueserp.com/search"
 
 # How many threads to spin up (default: 3)
